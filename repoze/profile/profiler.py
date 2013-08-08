@@ -8,7 +8,8 @@ import os
 import pstats
 import string
 import sys
-import threading
+import time
+from threading import Timer
 
 from repoze.profile.compat import bytes_
 from repoze.profile.compat import parse_qs
@@ -47,8 +48,10 @@ class ProfileMiddleware(object):
 
     def __init__(self, app,
                  global_conf=None,
-                 log_filename=DEFAULT_PROFILE_LOG,
+                 log_filename_prefix=DEFAULT_PROFILE_LOG,
                  cachegrind_filename=None,
+                 dump_interval = 10,
+                 dump_timestamp = True,
                  discard_first_request=True,
                  flush_at_shutdown = True,
                  path='/__profile__',
@@ -58,13 +61,17 @@ class ProfileMiddleware(object):
         self.remove = os.remove # for __del__
         self.app = app
         self.profiler = profile.Profile()
-        self.log_filename = log_filename
+        self.log_filename_prefix = log_filename_prefix
         self.cachegrind_filename = cachegrind_filename
+        self.dump_interval = dump_interval
+        self.dump_timestamp = dump_timestamp
         self.first_request = discard_first_request
-        self.lock = threading.Lock()
+        #self.lock = threading.Lock()
         self.flush_at_shutdown = flush_at_shutdown
         self.path = path
         self.unwind = unwind
+        self.dump_task = RepeatedTimer(self.dump_interval, dump_profile, self.profiler, \
+                           self.log_filename_prefix, os.getpid(), self.dump_timestamp)
 
     def index(self, request, output=None): # output=None D/I for testing
         querydata = request.get_params()
@@ -77,15 +84,15 @@ class ProfileMiddleware(object):
         if output is None:
             output = StringIO()
         url = request.get_url()
-        log_exists = os.path.exists(self.log_filename)
+        log_exists = os.path.exists(self.log_filename_prefix + str(os.getpid()))
 
         if clear and log_exists:
-            os.remove(self.log_filename)
+            os.remove(self.log_filename_prefix + str(os.getpid()))
             self.profiler = profile.Profile()
             log_exists = False
 
         if log_exists:
-            stats = self.Stats(self.log_filename) # D/I
+            stats = self.Stats(self.log_filename_prefix + str(os.getpid())) # D/I
             if not fulldirs:
                 stats.strip_dirs()
             stats.sort_stats(sort)
@@ -155,50 +162,40 @@ class ProfileMiddleware(object):
         return index
 
     def __del__(self):
-        if self.flush_at_shutdown and self.exists(self.log_filename):
-            self.remove(self.log_filename)
+        if self.flush_at_shutdown and self.exists(self.log_filename_prefix + str(os.getpid())):
+            self.remove(self.log_filename_prefix + str(os.getpid()))
 
     def __call__(self, environ, start_response):
         request = MiniRequest(environ)
 
         if request.path_info == self.path:
             # we're being asked to render the profile view
-            self.lock.acquire()
+            #self.lock.acquire()
             try:
                 text = self.index(request)
             finally:
-                self.lock.release()
+                pass
+                #self.lock.release()
             start_response('200 OK', [
                 ('content-type', 'text/html; charset="UTF-8"'),
                 ('content-length', str(len(text)))])
             return [bytes_(text)]
 
-        self.lock.acquire()
+        #self.lock.acquire()
         try:
             _locals = locals()
             code = self.unwind and PROFILE_EXEC_EAGER or PROFILE_EXEC_LAZY
             self.profiler.runctx(code, globals(), _locals)
 
-            if self.first_request: # discard to avoid timing warm-up
-                self.profiler = profile.Profile()
-                self.first_request = False
-            else:
-                self.profiler.dump_stats(self.log_filename)
-                if HAS_PP2CT and self.cachegrind_filename is not None:
-                    stats = pstats.Stats(self.profiler)
-                    conv = pyprof2calltree.CalltreeConverter(stats)
-                    grind = None
-                    try:
-                        grind = file(self.cachegrind_filename, 'wb')
-                        conv.output(grind)
-                    finally:
-                        if grind is not None:
-                            grind.close()
+            #if self.first_request: # discard to avoid timing warm-up
+            #    self.profiler = profile.Profile()
+            #    self.first_request = False
 
             app_iter = _locals['app_iter_']
             return app_iter
         finally:
-            self.lock.release()
+            pass
+            #self.lock.release()
 
 def boolean(s):
     if s == True:
@@ -371,8 +368,10 @@ AccumulatingProfileMiddleware = ProfileMiddleware # bw compat
 
 def make_profile_middleware(app,
                             global_conf,
-                            log_filename=DEFAULT_PROFILE_LOG,
+                            log_filename_prefix=DEFAULT_PROFILE_LOG,
                             cachegrind_filename=None,
+                            dump_interval=10,
+                            dump_timestamp=True,
                             discard_first_request='true',
                             path='/__profile__',
                             flush_at_shutdown='true',
@@ -393,14 +392,65 @@ def make_profile_middleware(app,
     """
     flush_at_shutdown = boolean(flush_at_shutdown)
     discard_first_request = boolean(discard_first_request)
+    dump_interval = int(dump_interval)
+    dump_timestamp = boolean(dump_timestamp)
     unwind = boolean(unwind)
         
     return ProfileMiddleware(
         app,
-        log_filename=log_filename,
+        log_filename_prefix=log_filename_prefix,
         cachegrind_filename=cachegrind_filename,
+        dump_interval = dump_interval,
+        dump_timestamp = dump_timestamp,
         discard_first_request=discard_first_request,
         flush_at_shutdown=flush_at_shutdown,
         path=path,
         unwind=unwind,
         )
+
+class RepeatedTimer(object):
+    
+    def __init__(self, interval, function, *args, **kwargs):
+        self._timer = None
+        self.interval = interval
+        self.function = function
+        self.args = args
+        self.kwargs = kwargs
+        self.is_running = False
+        self.start()
+        
+    def _run(self):
+        self.is_running = False
+        self.start()
+        self.function(*self.args, **self.kwargs)
+        
+    def start(self):
+        if not self.is_running:
+            self._timer = Timer(self.interval, self._run)
+            self._timer.start()
+            self.is_running = True
+            
+    def stop(self):
+        self._timer.cancel()
+        self.is_running = False
+        
+def dump_profile(profiler, log_filename_prefix, pid, dump_timestamp, *args, **kwargs):
+    if profiler and log_filename_prefix:
+        if dump_timestamp:
+            pfn = log_filename_prefix + str(pid) + "-" + str(time.time())
+        else:
+            pfn = log_filename_prefix + str(pid)
+        profiler.dump_stats(pfn)
+#         if HAS_PP2CT and cachegrind_filename is not None:
+#             stats = pstats.Stats(pfn)
+#             conv = pyprof2calltree.CalltreeConverter(stats)
+#             grind = None
+#             try:
+#                 grind = file(cachegrind_filename + str(pid), 'wb')
+#                 conv.output(grind)
+#             finally:
+#                 if grind is not None:
+#                     grind.close()
+    else:
+        print "Can't dump empty profiler or require file name for output!"
+        
