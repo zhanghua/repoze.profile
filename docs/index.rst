@@ -22,12 +22,14 @@ Wire up the middleware in your application::
  from repoze.profile import ProfileMiddleware
  middleware = ProfileMiddleware(
                 app,
-                log_filename='/foo/bar.log',
+                log_filename_prefix='/foo/bar.log',
                 cachegrind_filename='/foo/cachegrind.out.bar',
+                dump_interval = dump_interval,
+                dump_timestamp = dump_timestamp,
                 discard_first_request=True,
                 flush_at_shutdown=True,
                 path='/__profile__',
-                unwind=False,
+                unwind=False,                
                )
 
 The configuration options are as follows::
@@ -69,6 +71,8 @@ example::
  use = egg:repoze.profile
  log_filename = myapp.profile
  cachegrind_filename = cachegrind.out.myapp
+ dump_interval = 5
+ dump_timestamp = false
  discard_first_request = true
  path = /__profile__
  flush_at_shutdown = true

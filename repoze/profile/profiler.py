@@ -162,6 +162,7 @@ class ProfileMiddleware(object):
         return index
 
     def __del__(self):
+        self.dump_task and self.dump_task.stop()
         if self.flush_at_shutdown and self.exists(self.log_filename_prefix + str(os.getpid())):
             self.remove(self.log_filename_prefix + str(os.getpid()))
 
