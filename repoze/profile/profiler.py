@@ -441,7 +441,11 @@ def dump_profile(profiler, log_filename_prefix, pid, dump_timestamp, *args, **kw
             pfn = log_filename_prefix + str(pid) + "-" + str(time.time())
         else:
             pfn = log_filename_prefix + str(pid)
-        profiler.dump_stats(pfn)
+        tmpfn = pfn + ".tmp"
+        #profiler.dump_stats(pfn)
+        profiler.dump_stats(tmpfn)
+        os.rename(tmpfn, pfn)
+        
 #         if HAS_PP2CT and cachegrind_filename is not None:
 #             stats = pstats.Stats(pfn)
 #             conv = pyprof2calltree.CalltreeConverter(stats)
