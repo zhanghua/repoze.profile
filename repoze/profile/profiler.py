@@ -9,6 +9,7 @@ import pstats
 import string
 import sys
 import time
+import glob
 from threading import Timer
 
 from repoze.profile.compat import bytes_
@@ -77,6 +78,8 @@ class ProfileMiddleware(object):
         querydata = request.get_params()
         fulldirs = int(querydata.get('fulldirs', 0))
         sort = querydata.get('sort', 'time')
+        profile_id = querydata.get('profile','current').strip()
+        print 'profile selected:"%s"' % profile_id
         clear = querydata.get('clear', None)
         filename = querydata.get('filename', '').strip()
         limit = int(querydata.get('limit', 100))
@@ -84,15 +87,29 @@ class ProfileMiddleware(object):
         if output is None:
             output = StringIO()
         url = request.get_url()
-        log_exists = os.path.exists(self.log_filename_prefix + str(os.getpid()))
-
+        
+        if profile_id == None or profile_id == 'current':
+            log_file = [l for l in glob.glob(self.log_filename_prefix + str(os.getpid()) + '*') if os.path.exists(l) ]
+            log_file = sorted(log_file)
+        elif profile_id == 'all':
+            log_file = [ l for l in glob.glob(self.log_filename_prefix + '*') if os.path.exists(l) ]
+            log_file = sorted(log_file)
+        else:
+            log_file = self.log_filename_prefix + profile_id
+        log_exists = isinstance(log_file, list) or os.path.exists(log_file)
+ 
+        logfs = [ l.replace(self.log_filename_prefix, '') for l in glob.glob(self.log_filename_prefix + '*') ]
+        
         if clear and log_exists:
             os.remove(self.log_filename_prefix + str(os.getpid()))
             self.profiler = profile.Profile()
             log_exists = False
 
         if log_exists:
-            stats = self.Stats(self.log_filename_prefix + str(os.getpid())) # D/I
+            if isinstance(log_file, list):
+                stats = self.Stats(*log_file)
+            else:
+                stats = self.Stats(log_file) # D/I
             if not fulldirs:
                 stats.strip_dirs()
             stats.sort_stats(sort)
@@ -125,6 +142,14 @@ class ProfileMiddleware(object):
             sort_repl = '<option value="%s">' % sort
             sort_selected = '<option value="%s" selected>' % sort
             sort = sort_tmpl.replace(sort_repl, sort_selected)
+           
+            plist = ''
+            for p in logfs:
+                plist += '<option value="%s">%s</option>' % (p,p)
+            profile_ele = profile_tmpl.replace('#profile_list#', plist)
+            profile_repl = '<option value="%s">' % profile_id
+            profile_selected = '<option value="%s" selected>' % profile_id
+            profile_ele = profile_ele.replace(profile_repl, profile_selected)
             limit_repl = '<option value="%s">' % limit
             limit_selected = '<option value="%s" selected>' % limit
             limit = limit_tmpl.replace(limit_repl, limit_selected)
@@ -144,6 +169,7 @@ class ProfileMiddleware(object):
             formelements = formelements.substitute(
                 {'description':description,
                  'action':action,
+                 'profile':profile_ele,
                  'sort':sort,
                  'limit':limit,
                  'fulldirs':fulldirs,
@@ -212,6 +238,14 @@ empty_description = """
         <input type="submit" name="refresh" value="Refresh"/>
 """
 
+profile_tmpl = """
+              <select name="profile">
+                <option value="current">current</option>
+                <option value="all">all</option>
+                #profile_list#
+              </select>
+"""
+
 sort_tmpl = """
               <select name="sort">
                 <option value="time">time</option>
@@ -258,6 +292,9 @@ formelements_tmpl = """
       <div>
         <table>
           <tr>
+            <td>
+              <strong>Profile</strong>:
+               ${profile}
             <td>
               <strong>Sort</strong>:
                ${sort}
@@ -306,7 +343,7 @@ index_tmpl = """
     
     </form>
     <pre>
-       ${profiledata}
+${profiledata}
     </pre>
   </body>
 </html>
